@@ -55,6 +55,43 @@ public class CoreConfigSingboxServiceTests
     }
 
     [Fact]
+    public void GenerateClientConfigContent_TunEnabled_ShouldNotHijackDnsForCoreProcesses()
+    {
+        var config = CoreConfigTestFactory.CreateConfig(ECoreType.sing_box);
+        CoreConfigTestFactory.BindAppManagerConfig(config);
+        var node = CoreConfigTestFactory.CreateSocksNode(ECoreType.sing_box);
+        var context = CoreConfigTestFactory.CreateContext(config, node, ECoreType.sing_box) with
+        {
+            IsTunEnabled = true,
+        };
+
+        var result = new CoreConfigSingboxService(context).GenerateClientConfigContent();
+
+        result.Success.Should().BeTrue($"ret msg: {result.Msg}");
+        var cfg = JsonUtils.Deserialize<SingboxConfig>(result.Data!.ToString())!;
+
+        cfg.route.rules.Should().NotContain(r =>
+            r.action == "hijack-dns" && r.process_name != null && r.process_name.Count > 0);
+
+        var naiveExe = Utils.GetExeName("naive");
+        cfg.route.rules.Should().Contain(r =>
+            r.outbound == Global.DirectTag
+            && r.process_name != null
+            && r.process_name.Contains(naiveExe));
+
+        // The per-process direct-bypass rule must precede any hijack-dns rule so the
+        // external core's port-53 traffic matches "direct" first (first-match routing)
+        // and is not captured into sing-box's DNS engine, which is what caused the deadlock.
+        var directRuleIndex = cfg.route.rules.FindIndex(r =>
+            r.outbound == Global.DirectTag
+            && r.process_name != null
+            && r.process_name.Contains(naiveExe));
+        var firstHijackDnsIndex = cfg.route.rules.FindIndex(r => r.action == "hijack-dns");
+        directRuleIndex.Should().BeGreaterThanOrEqualTo(0);
+        firstHijackDnsIndex.Should().BeGreaterThan(directRuleIndex);
+    }
+
+    [Fact]
     public void GenerateClientConfigContent_BindInterface_ShouldUseDialBindInterface()
     {
         var config = CoreConfigTestFactory.CreateConfig(ECoreType.sing_box);
